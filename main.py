@@ -2788,7 +2788,6 @@ async def lifespan(app: FastAPI):
             SELECTING_MODE: [CallbackQueryHandler(mode_button_callback)],
         },
         fallbacks=[CommandHandler('start', ask_for_mode)],
-        per_message=True,
     )
 
     application.add_handler(conv_handler)
@@ -2798,31 +2797,51 @@ async def lifespan(app: FastAPI):
     op_handler = CommandHandler('op', op_command)
     application.add_handler(op_handler)
 
-    def run_polling_in_thread(app):
-        """Target for the thread that runs the bot."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # --- File lock to ensure only one bot instance runs ---
+    lock_file = 'bot.lock'
+    i_am_the_leader = False
+    if not os.path.exists(lock_file):
         try:
-            # Pass stop_signals=[] to prevent ValueError: add_signal_handler()
-            # can only be called from the main thread.
-            loop.run_until_complete(app.run_polling(stop_signals=[]))
-        finally:
-            loop.close()
+            # Use exclusive creation to avoid race conditions
+            with open(lock_file, 'x') as f:
+                f.write(str(os.getpid()))
+            i_am_the_leader = True
+        except FileExistsError:
+            print("Lock file was created by another instance. This instance will not run polling.")
 
-    # Run the bot in a separate thread
-    thread = threading.Thread(target=run_polling_in_thread, args=(application,))
-    thread.daemon = True
-    thread.start()
+    if i_am_the_leader:
+        print(f"This instance ({os.getpid()}) is the leader and will run the bot polling.")
 
-    # Send the initial message to ask for the mode
-    await application.bot.send_message(
-        chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"),
-        text="Bot instance started. Send /start to select a mode."
-    )
+        def run_polling_in_thread(app):
+            """Target for the thread that runs the bot."""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(app.run_polling(stop_signals=[]))
+            finally:
+                loop.close()
 
-    yield
-    # Clean up resources if needed on shutdown
-    print("FastAPI app shutting down...")
+        thread = threading.Thread(target=run_polling_in_thread, args=(application,))
+        thread.daemon = True
+        thread.start()
+
+        await application.bot.send_message(
+            chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"),
+            text="Bot instance started. Send /start to select a mode."
+        )
+    else:
+        print("Lock file exists. This instance will not run polling.")
+
+    try:
+        yield
+    finally:
+        # --- Cleanup on shutdown ---
+        if i_am_the_leader:
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+            print(f"Leader instance ({os.getpid()}) is shutting down and removing lock file.")
+        else:
+            print("Non-leader instance is shutting down.")
 
 app = FastAPI(lifespan=lifespan)
 
