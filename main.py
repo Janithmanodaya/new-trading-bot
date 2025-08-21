@@ -2802,7 +2802,9 @@ async def lifespan(app: FastAPI):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(app.run_polling())
+            # Pass stop_signals=[] to prevent ValueError: add_signal_handler()
+            # can only be called from the main thread.
+            loop.run_until_complete(app.run_polling(stop_signals=[]))
         finally:
             loop.close()
 
