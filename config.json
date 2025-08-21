@@ -1,0 +1,12 @@
+{
+    "telegram_token": "your_bot_token",
+    "telegram_chat_id": "your_chat_id",
+    "risk_per_trade": 0.01,
+    "leverage_min": 5,
+    "leverage_max": 20,
+    "delta_threshold": 0.5,
+    "imbalance_threshold": 0.65,
+    "database_path": "trades.db",
+    "max_daily_loss": 0.05,
+    "active_hours": ["08:00-20:00"]
+}

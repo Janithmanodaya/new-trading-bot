@@ -1,0 +1,36 @@
+[
+    {
+        "symbol": "DOTUSDT",
+        "side": "short",
+        "entry_price": 4.098,
+        "sl": 4.122284181348792,
+        "tp1": 4.061573727976812,
+        "tp2": null,
+        "status": "pending",
+        "quantity": 20.5,
+        "original_quantity": 20.5,
+        "timestamp": 1755439200000,
+        "entry_order_id": null,
+        "sl_order_id": null,
+        "tp_order_id": null,
+        "reason_for_entry": "Signal from rsi_divergence",
+        "strategy_type": "rsi_divergence"
+    },
+    {
+        "symbol": "AAVEUSDT",
+        "side": "short",
+        "entry_price": 309.35,
+        "sl": 311.5501163789691,
+        "tp1": 306.0498254315464,
+        "tp2": null,
+        "status": "pending",
+        "quantity": 0.2,
+        "original_quantity": 0.2,
+        "timestamp": 1755439200000,
+        "entry_order_id": null,
+        "sl_order_id": null,
+        "tp_order_id": null,
+        "reason_for_entry": "Signal from rsi_divergence",
+        "strategy_type": "rsi_divergence"
+    }
+]
