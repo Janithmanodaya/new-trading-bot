@@ -1,6 +1,6 @@
 import pandas as pd
 from binance.client import Client
-import keys
+import os
 import csv
 from datetime import datetime, timedelta
 import requests
@@ -34,7 +34,7 @@ def create_features(df):
 
 if __name__ == '__main__':
     try:
-        client = Client(keys.api_mainnet, keys.secret_mainnet)
+        client = Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"))
         client.ping()
     except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
         logging.error(f"Could not connect to Binance API: {e}")

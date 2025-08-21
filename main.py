@@ -641,7 +641,7 @@ async def monitor_open_positions(trade_manager, bot, interval_seconds=30):
                 message += f"*Total PnL:* `${total_pnl:+.2f}`"
                 
                 await bot.send_message(
-                    chat_id=keys.TELEGRAM_DEVELOP_ID,
+                    chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"),
                     text=message,
                     parse_mode='Markdown'
                 )
@@ -649,7 +649,7 @@ async def monitor_open_positions(trade_manager, bot, interval_seconds=30):
         except Exception as e:
             print(f"Error in monitor_open_positions: {e}")
             try:
-                await bot.send_message(chat_id=keys.TELEGRAM_DEVELOP_ID, text=f"🚨 Error in Position Monitor Loop: {e}")
+                await bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text=f"🚨 Error in Position Monitor Loop: {e}")
             except Exception as e2:
                 print(f"Failed to send monitoring error alert: {e2}")
         
@@ -2266,11 +2266,11 @@ async def send_backtest_summary(bot, metrics, backtest_trades, starting_balance)
 """
     try:
         # This is an 'info' message, send only to developer
-        await bot.send_message(chat_id=keys.TELEGRAM_DEVELOP_ID, text=summary_text, parse_mode='Markdown')
+        await bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text=summary_text, parse_mode='Markdown')
         with open('backtest/equity_curve.png', 'rb') as photo:
-            await bot.send_photo(chat_id=keys.TELEGRAM_DEVELOP_ID, photo=photo, caption="Equity Curve")
+            await bot.send_photo(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), photo=photo, caption="Equity Curve")
         with open('backtest/backtest_trades.csv', 'rb') as document:
-            await bot.send_document(chat_id=keys.TELEGRAM_DEVELOP_ID, document=document, filename='backtest_trades.csv')
+            await bot.send_document(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), document=document, filename='backtest_trades.csv')
     except Exception as e:
         print(f"Error sending backtest summary to Telegram: {e}")
 
@@ -2280,7 +2280,7 @@ async def send_backtest_complete_message(bot):
     """
     try:
         # This is an 'info' message, send only to developer
-        await bot.send_message(chat_id=keys.TELEGRAM_DEVELOP_ID, text="✅ Backtest is done.")
+        await bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text="✅ Backtest is done.")
     except Exception as e:
         print(f"Error sending backtest complete message: {e}")
 
@@ -2292,7 +2292,7 @@ async def send_market_analysis_image(bot, image_buffer, caption, backtest_mode=F
     if backtest_mode:
         return
     
-    target_chat_ids = [keys.TELEGRAM_DEVELOP_ID, keys.TELEGRAM_CHAT_ID]
+    target_chat_ids = [os.environ.get("TELEGRAM_DEVELOP_ID"), os.environ.get("TELEGRAM_CHAT_ID")]
     for chat_id in target_chat_ids:
         try:
             image_buffer.seek(0)
@@ -2404,7 +2404,7 @@ async def op_command(update, context):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="No open trades.")
         return
 
-    client = Client(keys.api_mainnet, keys.secret_mainnet)
+    client = Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"))
 
     for trade in open_trades:
         symbol = trade['symbol']
@@ -2931,7 +2931,7 @@ async def run_bot_logic():
             if live_mode:
                 balance = float(account_info['totalWalletBalance'])
                 # This is an 'info' message, send only to developer
-                await bot.send_message(chat_id=keys.TELEGRAM_DEVELOP_ID, text=f"Futures Account Balance: {balance:.2f} USDT")
+                await bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text=f"Futures Account Balance: {balance:.2f} USDT")
 
         except Exception as e:
             print(f"Error initializing Binance client: {e}")
