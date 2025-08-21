@@ -21,7 +21,10 @@ import io
 import threading
 import requests
 import logging
+import traceback
 from binance.exceptions import BinanceAPIException
+from fastapi import FastAPI
+import uvicorn
 import ML
 from keras.models import load_model
 from pandas_ta import rsi, macd, bbands, ema, psar, atr
@@ -2338,6 +2341,28 @@ def update_trailing_stop(klines, position_type, current_stop_loss, atr_multiplie
     
     return trailing_sl, psar_exit
 
+async def start_command(update, context):
+    """Sends a welcome message."""
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Bot started and running.")
+
+async def stop_command(update, context):
+    """Stops the bot gracefully."""
+    global bot_running
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Stopping bot...")
+    bot_running = False
+
+async def pluse_command(update, context):
+    """Pauses the bot's trading activity."""
+    global is_paused
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Pulsing bot's trading activity...")
+    is_paused = True
+
+async def run_command(update, context):
+    """Resumes the bot's trading activity."""
+    global is_paused
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Resuming bot's trading activity...")
+    is_paused = False
+
 async def op_command(update, context):
     """
     Send the latest chart for all open trades.
@@ -2529,6 +2554,11 @@ ml_model = None
 ml_feature_columns = None
 model_confidence_threshold = 0.7 # Default value
 
+# State variables for bot control
+bot_running = True
+is_paused = False
+last_ip = None
+
 rejected_symbols = {} # To store symbols recently rejected by ML
 
 def generate_live_features(klines, feature_columns, sequence_length=60):
@@ -2695,11 +2725,33 @@ async def execute_fibonacci_and_reversal_strategy(client, symbol, symbol_info, c
     return None
 
 
+async def check_ip_change(bot):
+    """Checks for public IP changes and notifies the developer."""
+    global last_ip
+    current_ip = get_public_ip()
+    if current_ip and last_ip and current_ip != last_ip:
+        await send_telegram_alert(bot, f"IP Address Change Detected!\nOld IP: {last_ip}\nNew IP: {current_ip}")
+    last_ip = current_ip
+
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
+
+def run_web_app():
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+
 async def main():
     """
     Main function to run the Binance trading bot.
     """
     print("Starting bot...")
+
+    # Start the web app in a separate thread
+    web_thread = threading.Thread(target=run_web_app, daemon=True)
+    web_thread.start()
 
     # Get and print public IP address
     public_ip = get_public_ip()
@@ -2777,6 +2829,10 @@ async def main():
 
     # Set up the Telegram bot
     application = ApplicationBuilder().token(keys.telegram_bot_token).build()
+    application.add_handler(CommandHandler('start', start_command))
+    application.add_handler(CommandHandler('stop', stop_command))
+    application.add_handler(CommandHandler('pluse', pluse_command))
+    application.add_handler(CommandHandler('run', run_command))
     op_handler = CommandHandler('op', op_command)
     application.add_handler(op_handler)
 
@@ -2880,24 +2936,31 @@ async def main():
         print("Entering main loop...")
         loop = asyncio.get_running_loop()
         last_session = None
-        while True:
-            if not is_session_valid(client):
-                print("Session is not valid. Halting new scans and cancelling pending orders.")
-                with trades_lock:
-                    pending_trades = [t for t in trades if t['status'] == 'pending']
-                    for trade in pending_trades:
-                        print(f"Cancelling pending trade for {trade['symbol']} due to invalid session.")
-                        trade['status'] = 'cancelled_session_invalid'
-                        if trade['symbol'] in virtual_orders:
-                            del virtual_orders[trade['symbol']]
-                    update_trade_report(trades)
+        while bot_running:
+            try:
+                if is_paused:
+                    await asyncio.sleep(10)
+                    continue
 
-                await send_telegram_alert(bot, "⚠️ Binance session is invalid. Bot is pausing new trade scans but will continue to monitor open positions.")
-                print("Sleeping for 60 seconds before re-checking session.")
-                await asyncio.sleep(60)
-                continue
+                await check_ip_change(bot)
 
-            print("Starting new scan cycle...")
+                if not is_session_valid(client):
+                    print("Session is not valid. Halting new scans and cancelling pending orders.")
+                    with trades_lock:
+                        pending_trades = [t for t in trades if t['status'] == 'pending']
+                        for trade in pending_trades:
+                            print(f"Cancelling pending trade for {trade['symbol']} due to invalid session.")
+                            trade['status'] = 'cancelled_session_invalid'
+                            if trade['symbol'] in virtual_orders:
+                                del virtual_orders[trade['symbol']]
+                        update_trade_report(trades)
+
+                    await send_telegram_alert(bot, "⚠️ Binance session is invalid. Bot is pausing new trade scans but will continue to monitor open positions.")
+                    print("Sleeping for 60 seconds before re-checking session.")
+                    await asyncio.sleep(60)
+                    continue
+
+                print("Starting new scan cycle...")
 
             # Session Filtering
             server_time = get_binance_server_time(client)
@@ -3054,6 +3117,11 @@ async def main():
 
             print("Scan cycle complete. Cooling down for 2 minutes...")
             await asyncio.sleep(120)
+            except Exception as e:
+                error_message = f"An unexpected error occurred in the main loop: {e}\n{traceback.format_exc()}"
+                print(error_message)
+                await send_telegram_alert(bot, error_message)
+                await asyncio.sleep(60) # Wait a minute before retrying
 
 if __name__ == "__main__":
     asyncio.run(main())
