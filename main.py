@@ -8,7 +8,8 @@ from binance.client import Client
 import os
 import asyncio
 import telegram
-from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
+from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue, ConversationHandler, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import numpy as np
 import json
 import pytz
@@ -2342,6 +2343,32 @@ def update_trailing_stop(klines, position_type, current_stop_loss, atr_multiplie
     
     return trailing_sl, psar_exit
 
+async def ask_for_mode(update, context):
+    """Sends a message with three inline buttons attached."""
+    keyboard = [
+        [
+            InlineKeyboardButton("Live", callback_data="1"),
+            InlineKeyboardButton("Signal", callback_data="2"),
+            InlineKeyboardButton("Backtest", callback_data="3"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text="Please choose a mode to start the bot:", reply_markup=reply_markup)
+    return SELECTING_MODE
+
+async def mode_button_callback(update, context):
+    """Parses the CallbackQuery and sets the bot mode."""
+    global bot_mode
+    query = update.callback_query
+    await query.answer()
+    bot_mode = query.data
+    await query.edit_message_text(text=f"Mode selected: {'Live' if bot_mode == '1' else 'Signal' if bot_mode == '2' else 'Backtest'}. Starting bot logic...")
+
+    # Start the main bot logic in a background task
+    asyncio.create_task(run_bot_logic())
+
+    return ConversationHandler.END
+
 async def start_command(update, context):
     """Sends a welcome message."""
     await context.bot.send_message(chat_id=update.effective_chat.id, text="Bot started and running.")
@@ -2559,6 +2586,10 @@ model_confidence_threshold = 0.7 # Default value
 bot_running = True
 is_paused = False
 last_ip = None
+bot_mode = None
+
+# Conversation states
+SELECTING_MODE = 0
 
 rejected_symbols = {} # To store symbols recently rejected by ML
 
@@ -2735,14 +2766,46 @@ async def check_ip_change(bot):
     last_ip = current_ip
 
 
+application = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Handles startup and shutdown events for the FastAPI application.
     """
+    global application
     print("FastAPI app starting up...")
-    # Start the main bot logic in a background task
-    asyncio.create_task(main())
+
+    # Set up the Telegram bot
+    application = ApplicationBuilder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
+
+    # Create the conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', ask_for_mode)],
+        states={
+            SELECTING_MODE: [CallbackQueryHandler(mode_button_callback)],
+        },
+        fallbacks=[CommandHandler('start', ask_for_mode)],
+    )
+
+    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler('stop', stop_command))
+    application.add_handler(CommandHandler('pluse', pluse_command))
+    application.add_handler(CommandHandler('run', run_command))
+    op_handler = CommandHandler('op', op_command)
+    application.add_handler(op_handler)
+
+    # Run the bot in a separate thread
+    thread = threading.Thread(target=application.run_polling)
+    thread.daemon = True
+    thread.start()
+
+    # Send the initial message to ask for the mode
+    await application.bot.send_message(
+        chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"),
+        text="Bot instance started. Send /start to select a mode."
+    )
+
     yield
     # Clean up resources if needed on shutdown
     print("FastAPI app shutting down...")
@@ -2753,7 +2816,7 @@ app = FastAPI(lifespan=lifespan)
 def read_root():
     return {"status": "ok"}
 
-async def main():
+async def run_bot_logic():
     """
     Main function to run the Binance trading bot.
     """
@@ -2833,23 +2896,11 @@ async def main():
         print(f"Error loading symbols: {e}")
         return
 
-    # Set up the Telegram bot
-    application = ApplicationBuilder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
-    application.add_handler(CommandHandler('start', start_command))
-    application.add_handler(CommandHandler('stop', stop_command))
-    application.add_handler(CommandHandler('pluse', pluse_command))
-    application.add_handler(CommandHandler('run', run_command))
-    op_handler = CommandHandler('op', op_command)
-    application.add_handler(op_handler)
+    # The Telegram bot application is now set up in the lifespan manager
+    global application
+    bot = application.bot
 
-    # Get user input for mode
-    while True:
-        mode = input("Select (1)Live / (2)Signal / (3)Backtest: ")
-        if mode in ['1', '2', '3']:
-            break
-        else:
-            print("Invalid input. Please select 1, 2, or 3.")
-
+    mode = bot_mode
     client = None
     symbols_info = None
     is_hedge_mode = False
@@ -2888,24 +2939,15 @@ async def main():
     else: # mode == '3'
         backtest_mode = True
         print("Running in Backtest mode.")
-        days_to_backtest = int(input("Enter the number of days to backtest: "))
+        # For now, we will hardcode the days to backtest. This can be a future improvement.
+        days_to_backtest = 30
         try:
-            client = Client(keys.api_mainnet, keys.secret_mainnet)
+            client = Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"))
             exchange_info = client.futures_exchange_info()
             symbols_info = {s['symbol']: s for s in exchange_info['symbols']}
         except Exception as e:
             print(f"Could not connect to Binance for backtest setup: {e}")
             print("Backtest will run without quantity calculation if symbols_info is not available.")
-
-
-    # Start the Telegram bot
-    def run_bot():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.run_polling())
-
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
 
     # Load trades from JSON
     if not backtest_mode and os.path.exists('trades.json'):
@@ -2968,161 +3010,162 @@ async def main():
 
                 print("Starting new scan cycle...")
 
-            # Session Filtering
-            server_time = get_binance_server_time(client)
-            current_hour = -1
-            if server_time:
-                current_hour = datetime.datetime.fromtimestamp(server_time / 1000, tz=pytz.utc).hour
+                # Session Filtering
+                server_time = get_binance_server_time(client)
+                current_hour = -1
+                if server_time:
+                    current_hour = datetime.datetime.fromtimestamp(server_time / 1000, tz=pytz.utc).hour
 
-            active_session = None
-            if 0 <= current_hour < 9:
-                active_session = "Asia"
-            elif 7 <= current_hour < 16:
-                active_session = "London"
-            elif 12 <= current_hour < 21:
-                active_session = "New York"
+                active_session = None
+                if 0 <= current_hour < 9:
+                    active_session = "Asia"
+                elif 7 <= current_hour < 16:
+                    active_session = "London"
+                elif 12 <= current_hour < 21:
+                    active_session = "New York"
 
-            if active_session:
-                if active_session != last_session:
-                    await send_telegram_alert(bot, f"📈 New Session Started: {active_session}")
-                    last_session = active_session
-            else:
-                if last_session is not None:
-                    await send_telegram_alert(bot, "😴 Outside of all trading sessions. Bot is sleeping.")
-                last_session = None
-                print(f"Outside of trading session. Current UTC hour: {current_hour}. Sleeping...")
-                await asyncio.sleep(60)
-                continue
+                if active_session:
+                    if active_session != last_session:
+                        await send_telegram_alert(bot, f"📈 New Session Started: {active_session}")
+                        last_session = active_session
+                else:
+                    if last_session is not None:
+                        await send_telegram_alert(bot, "😴 Outside of all trading sessions. Bot is sleeping.")
+                    last_session = None
+                    print(f"Outside of trading session. Current UTC hour: {current_hour}. Sleeping...")
+                    await asyncio.sleep(60)
+                    continue
 
-            for symbol in symbols:
-                try:
-                    if symbol in rejected_symbols and time.time() - rejected_symbols[symbol] < 4 * 60 * 60: # Avoid re-scanning recently rejected symbols
-                        continue
-                    if symbol in virtual_orders:
-                        continue
-                    with trades_lock:
-                        open_trades = [t for t in trades if t['status'] in ['running', 'tp1_hit', 'tp2_hit', 'pending']]
-                        if len(open_trades) >= max_open_positions:
+                for symbol in symbols:
+                    try:
+                        if symbol in rejected_symbols and time.time() - rejected_symbols[symbol] < 4 * 60 * 60: # Avoid re-scanning recently rejected symbols
+                            continue
+                        if symbol in virtual_orders:
+                            continue
+                        with trades_lock:
+                            open_trades = [t for t in trades if t['status'] in ['running', 'tp1_hit', 'tp2_hit', 'pending']]
+                            if len(open_trades) >= max_open_positions:
+                                continue
+
+                        print(f"Scanning {symbol}...")
+                        klines_15m = get_klines(client, symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=lookback_candles_long)
+                        if not klines_15m or len(klines_15m) < max(config.get('market_state_window_sizes', [10, 20, 50])):
+                            print(f"Not enough kline data for {symbol} to determine market state. Skipping.")
                             continue
 
-                    print(f"Scanning {symbol}...")
-                    klines_15m = get_klines(client, symbol, interval=Client.KLINE_INTERVAL_15MINUTE, limit=lookback_candles_long)
-                    if not klines_15m or len(klines_15m) < max(config.get('market_state_window_sizes', [10, 20, 50])):
-                        print(f"Not enough kline data for {symbol} to determine market state. Skipping.")
-                        continue
+                        # Market State Analysis
+                        market_state, trend_type = get_market_state(klines_15m, config.get('market_state_window_sizes', [10, 20, 50]))
 
-                    # Market State Analysis
-                    market_state, trend_type = get_market_state(klines_15m, config.get('market_state_window_sizes', [10, 20, 50]))
-
-                    # --- Sequential, Prioritized Strategy Check ---
-                    signal = None
-                    
-                    # 1. Check FVG Strategy (runs in any market condition)
-                    print(f"  - Checking FVG Strategy for {symbol}...")
-                    signal = await execute_fvg_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager)
-                    
-                    if not signal:
-                        # 2. Check RSI Divergence Strategy (runs in any market condition)
-                        print(f"  - Checking RSI Divergence Strategy for {symbol}...")
-                        signal = await execute_rsi_divergence_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager)
-
-                    if not signal and market_state == MarketState.TRENDING:
-                        # 3. Check Fibonacci Strategy (only if market is trending)
-                        print(f"  - Market is trending, checking Fibonacci/Reversal Strategy for {symbol}...")
-                        signal = await execute_fibonacci_and_reversal_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager, klines_15m)
-
-                    # --- Process the first valid signal found ---
-                    if signal:
-                        print(f"  - Valid signal found for {symbol} from strategy: {signal['strategy']}")
-                        entry_price = signal['entry_price']
-                        sl = signal['sl']
-                        tp = signal['tp']
-                        trade_side = signal['side']
-                        strategy_name = signal['strategy']
+                        # --- Sequential, Prioritized Strategy Check ---
+                        signal = None
                         
-                        quantity, position_size = calculate_quantity(client, symbols_info[symbol], config['risk_per_trade'], sl, entry_price, config['leverage'], config.get('risk_amount_usd', 0), config_to_bool(config.get('use_fixed_risk_amount', False)))
+                        # 1. Check FVG Strategy (runs in any market condition)
+                        print(f"  - Checking FVG Strategy for {symbol}...")
+                        signal = await execute_fvg_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager)
                         
-                        if quantity and quantity > 0:
-                            # --- Validation Step 1: Minimum Notional Value Check ---
-                            min_notional = 0.0
-                            for f in symbols_info[symbol]['filters']:
-                                if f['filterType'] == 'MIN_NOTIONAL':
-                                    min_notional = float(f['notional'])
-                                    break
+                        if not signal:
+                            # 2. Check RSI Divergence Strategy (runs in any market condition)
+                            print(f"  - Checking RSI Divergence Strategy for {symbol}...")
+                            signal = await execute_rsi_divergence_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager)
+
+                        if not signal and market_state == MarketState.TRENDING:
+                            # 3. Check Fibonacci Strategy (only if market is trending)
+                            print(f"  - Market is trending, checking Fibonacci/Reversal Strategy for {symbol}...")
+                            signal = await execute_fibonacci_and_reversal_strategy(client, symbol, symbols_info[symbol], config, bot, trades, trades_lock, virtual_orders, trade_manager, klines_15m)
+
+                        # --- Process the first valid signal found ---
+                        if signal:
+                            print(f"  - Valid signal found for {symbol} from strategy: {signal['strategy']}")
+                            entry_price = signal['entry_price']
+                            sl = signal['sl']
+                            tp = signal['tp']
+                            trade_side = signal['side']
+                            strategy_name = signal['strategy']
                             
-                            if position_size < min_notional:
-                                print(f"  - Signal for {symbol} aborted: Position size {position_size:.2f} is below minimum notional {min_notional:.2f}.")
-                                continue
-
-                            # --- Validation Step 2: Pre-Trade Margin Check ---
-                            required_margin = position_size / leverage
-                            account_info = await loop.run_in_executor(None, client.futures_account)
-                            available_balance = float(next((asset['availableBalance'] for asset in account_info['assets'] if asset['asset'] == 'USDT'), '0'))
-
-                            if required_margin > available_balance:
-                                print(f"  - Signal for {symbol} aborted: Insufficient margin. Required: {required_margin:.2f}, Available: {available_balance:.2f}")
-                                continue
+                            quantity, position_size = calculate_quantity(client, symbols_info[symbol], config['risk_per_trade'], sl, entry_price, config['leverage'], config.get('risk_amount_usd', 0), config_to_bool(config.get('use_fixed_risk_amount', False)))
                             
-                            # --- All checks passed, create and send chart/alert ---
-                            caption = (f"🚀 NEW SIGNAL: {strategy_name.upper()} 🚀\n"
-                                       f"Symbol: {symbol}\n"
-                                       f"Side: {trade_side.capitalize()}\n"
-                                       f"Entry: {entry_price:.5f}\n"
-                                       f"SL: {sl:.5f}\n"
-                                       f"TP: {tp:.5f}\n\n"
-                                       f"PENDING - Waiting for price to reach entry.")
-                            
-                            image_buffer = None
-                            chart_data = signal.get('chart_data')
+                            if quantity and quantity > 0:
+                                # --- Validation Step 1: Minimum Notional Value Check ---
+                                min_notional = 0.0
+                                for f in symbols_info[symbol]['filters']:
+                                    if f['filterType'] == 'MIN_NOTIONAL':
+                                        min_notional = float(f['notional'])
+                                        break
 
-                            try:
-                                if strategy_name == 'fvg':
-                                    image_buffer = generate_fvg_chart(symbol, klines_15m, signal, chart_data)
-                                elif strategy_name == 'rsi_divergence':
-                                    image_buffer = generate_rsi_divergence_chart(symbol, klines_15m, signal, chart_data)
-                                elif strategy_name == 'reversal':
-                                    # Note: The reversal_details are nested in chart_data now
-                                    image_buffer = generate_reversal_chart(symbol, klines_15m, chart_data['reversal_details'])
-                                elif strategy_name == 'fibonacci':
-                                    # Note: The fibonacci details are nested in chart_data now
-                                    image_buffer = generate_fib_chart(symbol, klines_15m, chart_data['trend'], chart_data['swing_high'], chart_data['swing_low'], entry_price, sl, tp)
+                                if position_size < min_notional:
+                                    print(f"  - Signal for {symbol} aborted: Position size {position_size:.2f} is below minimum notional {min_notional:.2f}.")
+                                    continue
 
-                                if image_buffer:
-                                    await send_market_analysis_image(bot, image_buffer, caption)
-                                else:
+                                # --- Validation Step 2: Pre-Trade Margin Check ---
+                                required_margin = position_size / leverage
+                                account_info = await loop.run_in_executor(None, client.futures_account)
+                                available_balance = float(next((asset['availableBalance'] for asset in account_info['assets'] if asset['asset'] == 'USDT'), '0'))
+
+                                if required_margin > available_balance:
+                                    print(f"  - Signal for {symbol} aborted: Insufficient margin. Required: {required_margin:.2f}, Available: {available_balance:.2f}")
+                                    continue
+
+                                # --- All checks passed, create and send chart/alert ---
+                                caption = (f"🚀 NEW SIGNAL: {strategy_name.upper()} 🚀\n"
+                                           f"Symbol: {symbol}\n"
+                                           f"Side: {trade_side.capitalize()}\n"
+                                           f"Entry: {entry_price:.5f}\n"
+                                           f"SL: {sl:.5f}\n"
+                                           f"TP: {tp:.5f}\n\n"
+                                           f"PENDING - Waiting for price to reach entry.")
+
+                                image_buffer = None
+                                chart_data = signal.get('chart_data')
+
+                                try:
+                                    if strategy_name == 'fvg':
+                                        image_buffer = generate_fvg_chart(symbol, klines_15m, signal, chart_data)
+                                    elif strategy_name == 'rsi_divergence':
+                                        image_buffer = generate_rsi_divergence_chart(symbol, klines_15m, signal, chart_data)
+                                    elif strategy_name == 'reversal':
+                                        # Note: The reversal_details are nested in chart_data now
+                                        image_buffer = generate_reversal_chart(symbol, klines_15m, chart_data['reversal_details'])
+                                    elif strategy_name == 'fibonacci':
+                                        # Note: The fibonacci details are nested in chart_data now
+                                        image_buffer = generate_fib_chart(symbol, klines_15m, chart_data['trend'], chart_data['swing_high'], chart_data['swing_low'], entry_price, sl, tp)
+
+                                    if image_buffer:
+                                        await send_market_analysis_image(bot, image_buffer, caption)
+                                    else:
+                                        await send_telegram_alert(bot, caption, message_type='signal')
+                                except Exception as e:
+                                    print(f"Error generating chart for {strategy_name}: {e}")
                                     await send_telegram_alert(bot, caption, message_type='signal')
-                            except Exception as e:
-                                print(f"Error generating chart for {strategy_name}: {e}")
-                                await send_telegram_alert(bot, caption, message_type='signal')
 
-                            new_trade = {
-                                'symbol': symbol, 'side': trade_side, 'entry_price': entry_price, 'sl': sl, 
-                                'tp1': tp, 'tp2': None, 'status': 'pending',
-                                'quantity': quantity, 'original_quantity': quantity, 
-                                'timestamp': klines_15m[-1][0], 
-                                'entry_order_id': None, 'sl_order_id': None, 'tp_order_id': None, 
-                                'reason_for_entry': f"Signal from {strategy_name}",
-                                'strategy_type': strategy_name
-                            }
-                            
-                            with trades_lock:
-                                trades.append(new_trade)
-                            virtual_orders[symbol] = new_trade # This creates the lockout
-                            update_trade_report(trades)
-                            
-                            # Start cooldown for the specific strategy that triggered
-                            trade_manager.start_cooldown(symbol, strategy_name)
-                            print(f"  - Trade initiated for {symbol} based on {strategy_name}. Symbol is now on cooldown.")
+                                new_trade = {
+                                    'symbol': symbol, 'side': trade_side, 'entry_price': entry_price, 'sl': sl,
+                                    'tp1': tp, 'tp2': None, 'status': 'pending',
+                                    'quantity': quantity, 'original_quantity': quantity,
+                                    'timestamp': klines_15m[-1][0],
+                                    'entry_order_id': None, 'sl_order_id': None, 'tp_order_id': None,
+                                    'reason_for_entry': f"Signal from {strategy_name}",
+                                    'strategy_type': strategy_name
+                                }
+
+                                with trades_lock:
+                                    trades.append(new_trade)
+                                virtual_orders[symbol] = new_trade # This creates the lockout
+                                update_trade_report(trades)
+
+                                # Start cooldown for the specific strategy that triggered
+                                trade_manager.start_cooldown(symbol, strategy_name)
+                                print(f"  - Trade initiated for {symbol} based on {strategy_name}. Symbol is now on cooldown.")
+                            else:
+                                print(f"  - Signal found for {symbol}, but quantity calculation failed or resulted in 0.")
                         else:
-                            print(f"  - Signal found for {symbol}, but quantity calculation failed or resulted in 0.")
-                    else:
-                        print(f"  - No valid signals found for {symbol} in this cycle.")
-                except Exception as e:
-                    print(f"Error scanning {symbol}: {e}")
-                    rejected_symbols[symbol] = time.time()
+                            print(f"  - No valid signals found for {symbol} in this cycle.")
+                    except Exception as e:
+                        print(f"Error scanning {symbol}: {e}")
+                        rejected_symbols[symbol] = time.time()
 
-            print("Scan cycle complete. Cooling down for 2 minutes...")
-            await asyncio.sleep(120)
+                print("Scan cycle complete. Cooling down for 2 minutes...")
+                await asyncio.sleep(120)
+
             except Exception as e:
                 error_message = f"An unexpected error occurred in the main loop: {e}\n{traceback.format_exc()}"
                 print(error_message)
