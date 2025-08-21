@@ -2788,6 +2788,7 @@ async def lifespan(app: FastAPI):
             SELECTING_MODE: [CallbackQueryHandler(mode_button_callback)],
         },
         fallbacks=[CommandHandler('start', ask_for_mode)],
+        per_message=True,
     )
 
     application.add_handler(conv_handler)
