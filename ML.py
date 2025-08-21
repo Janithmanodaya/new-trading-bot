@@ -1,21 +1,5 @@
 import os
-import subprocess
 import sys
-
-def install_dependencies():
-    """
-    Installs all required libraries from requirements.txt.
-    """
-    print("--- Installing dependencies from requirements.txt ---")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("--- Dependencies installed successfully ---")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install dependencies: {e}")
-        sys.exit(1)
-
-# Install dependencies before other imports
-install_dependencies()
 
 # Set TensorFlow logging level to suppress all but error messages
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
