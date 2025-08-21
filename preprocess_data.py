@@ -6,7 +6,6 @@ from tqdm import tqdm
 import pandas_ta as ta
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
-import keys
 import time
 import shutil
 import multiprocessing as mp
@@ -28,7 +27,7 @@ PROCESSED_DIR = os.path.join(DATA_DIR, 'processed')
 
 def get_client():
     """Initializes and returns the Binance client with a timeout."""
-    return Client(keys.BINANCE_API_KEY, keys.BINANCE_API_SECRET, requests_params={'timeout': 10})
+    return Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"), requests_params={'timeout': 10})
 
 def download_data_for_symbol(symbol, timeframe):
     """
