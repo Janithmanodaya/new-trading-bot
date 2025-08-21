@@ -2797,8 +2797,12 @@ async def lifespan(app: FastAPI):
     op_handler = CommandHandler('op', op_command)
     application.add_handler(op_handler)
 
+    def run_polling_in_thread(app):
+        """Target for the thread that runs the bot."""
+        asyncio.run(app.run_polling())
+
     # Run the bot in a separate thread
-    thread = threading.Thread(target=application.run_polling)
+    thread = threading.Thread(target=run_polling_in_thread, args=(application,))
     thread.daemon = True
     thread.start()
 
