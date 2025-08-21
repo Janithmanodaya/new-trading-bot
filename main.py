@@ -11,6 +11,8 @@ import telegram
 from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue, ConversationHandler, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import numpy as np
+if not hasattr(np, 'NaN'):
+    np.NaN = np.nan
 import json
 import pytz
 import matplotlib
