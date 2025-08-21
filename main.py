@@ -25,6 +25,7 @@ import traceback
 from binance.exceptions import BinanceAPIException
 from fastapi import FastAPI
 import uvicorn
+from contextlib import asynccontextmanager
 import ML
 from keras.models import load_model
 from pandas_ta import rsi, macd, bbands, ema, psar, atr
@@ -2734,24 +2735,29 @@ async def check_ip_change(bot):
     last_ip = current_ip
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Handles startup and shutdown events for the FastAPI application.
+    """
+    print("FastAPI app starting up...")
+    # Start the main bot logic in a background task
+    asyncio.create_task(main())
+    yield
+    # Clean up resources if needed on shutdown
+    print("FastAPI app shutting down...")
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def read_root():
     return {"status": "ok"}
-
-def run_web_app():
-    uvicorn.run(app, host="0.0.0.0", port=8080)
 
 async def main():
     """
     Main function to run the Binance trading bot.
     """
     print("Starting bot...")
-
-    # Start the web app in a separate thread
-    web_thread = threading.Thread(target=run_web_app, daemon=True)
-    web_thread.start()
 
     # Get and print public IP address
     public_ip = get_public_ip()
@@ -3122,6 +3128,3 @@ async def main():
                 print(error_message)
                 await send_telegram_alert(bot, error_message)
                 await asyncio.sleep(60) # Wait a minute before retrying
-
-if __name__ == "__main__":
-    asyncio.run(main())
