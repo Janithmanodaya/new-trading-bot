@@ -43,7 +43,6 @@ from tabulate import tabulate
 import datetime
 import pandas_ta as ta
 from binance.client import Client
-import keys
 import keras_tuner as kt
 
 # --- New Data Loading and Analysis Functions ---
@@ -54,7 +53,7 @@ def load_symbols():
 
 def download_data(symbol, timeframe='1h', limit=1000):
     """Downloads historical kline data for a given symbol and timeframe."""
-    client = Client(keys.BINANCE_API_KEY, keys.BINANCE_API_SECRET)
+    client = Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"))
     klines = client.get_historical_klines(symbol, timeframe, limit=limit)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
