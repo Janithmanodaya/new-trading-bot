@@ -2770,18 +2770,18 @@ async def check_ip_change(bot):
 
 application = None
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def start_bot_polling():
     """
-    Handles startup and shutdown events for the FastAPI application.
+    Initializes and runs the Telegram bot polling. This function is intended
+    to be the main entry point for the bot worker process.
     """
     global application
-    print("FastAPI app starting up...")
+    print("Starting bot polling...")
 
     # Set up the Telegram bot
     application = ApplicationBuilder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
 
-    # Create the conversation handler
+    # Create the conversation handler for mode selection
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', ask_for_mode)],
         states={
@@ -2797,53 +2797,20 @@ async def lifespan(app: FastAPI):
     op_handler = CommandHandler('op', op_command)
     application.add_handler(op_handler)
 
-    # --- File lock to ensure only one bot instance runs ---
-    lock_file = 'bot.lock'
-    i_am_the_leader = False
-    if not os.path.exists(lock_file):
-        try:
-            # Use exclusive creation to avoid race conditions
-            with open(lock_file, 'x') as f:
-                f.write(str(os.getpid()))
-            i_am_the_leader = True
-        except FileExistsError:
-            print("Lock file was created by another instance. This instance will not run polling.")
-
-    if i_am_the_leader:
-        print(f"This instance ({os.getpid()}) is the leader and will run the bot polling.")
-
-        def run_polling_in_thread(app):
-            """Target for the thread that runs the bot."""
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(app.run_polling(stop_signals=[]))
-            finally:
-                loop.close()
-
-        thread = threading.Thread(target=run_polling_in_thread, args=(application,))
-        thread.daemon = True
-        thread.start()
-
+    print("Bot is ready. Starting polling...")
+    try:
         await application.bot.send_message(
             chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"),
-            text="Bot instance started. Send /start to select a mode."
+            text="Bot worker started. Send /start to select a mode."
         )
-    else:
-        print("Lock file exists. This instance will not run polling.")
+    except Exception as e:
+        print(f"Could not send startup message: {e}")
 
-    try:
-        yield
-    finally:
-        # --- Cleanup on shutdown ---
-        if i_am_the_leader:
-            if os.path.exists(lock_file):
-                os.remove(lock_file)
-            print(f"Leader instance ({os.getpid()}) is shutting down and removing lock file.")
-        else:
-            print("Non-leader instance is shutting down.")
+    # run_polling() is a blocking call that runs forever until the process is stopped.
+    await application.run_polling(stop_signals=None)
 
-app = FastAPI(lifespan=lifespan)
+
+app = FastAPI()
 
 @app.get("/")
 def read_root():
@@ -3204,3 +3171,18 @@ async def run_bot_logic():
                 print(error_message)
                 await send_telegram_alert(bot, error_message)
                 await asyncio.sleep(60) # Wait a minute before retrying
+
+if __name__ == "__main__":
+    # This script can be run in two ways:
+    # 1. As a web server (default, via uvicorn): `uvicorn main:app`
+    # 2. As a bot worker: `python main.py --worker`
+
+    if len(sys.argv) > 1 and sys.argv[1] == '--worker':
+        print("Starting application in worker mode...")
+        try:
+            asyncio.run(start_bot_polling())
+        except KeyboardInterrupt:
+            print("Worker stopped manually.")
+        except Exception as e:
+            print(f"An error occurred in the worker: {e}")
+            traceback.print_exc()
