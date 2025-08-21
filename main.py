@@ -5,7 +5,7 @@ import sys
 import pandas as pd
 import time
 from binance.client import Client
-import keys
+import os
 import asyncio
 import telegram
 from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
@@ -2222,10 +2222,10 @@ async def send_telegram_alert(bot, message, message_type='info'):
         logging.warning(f"Telegram bot not available. Message not sent: {message}")
         return
 
-    target_chat_ids = [keys.TELEGRAM_DEVELOP_ID]
+    target_chat_ids = [os.environ.get("TELEGRAM_DEVELOP_ID")]
     if message_type == 'signal':
         # Also send to the main channel for signals
-        target_chat_ids.append(keys.TELEGRAM_CHAT_ID)
+        target_chat_ids.append(os.environ.get("TELEGRAM_CHAT_ID"))
 
     for chat_id in target_chat_ids:
         try:
@@ -2243,7 +2243,7 @@ async def send_start_message(bot, backtest_mode=False, current_session=None):
         else:
             message += "\n😴 Outside of all trading sessions."
         # This is an 'info' message, send only to developer
-        await bot.send_message(chat_id=keys.TELEGRAM_DEVELOP_ID, text=message)
+        await bot.send_message(chat_id=os.environ.get("TELEGRAM_DEVELOP_ID"), text=message)
     except Exception as e:
         print(f"Error sending start message: {e}")
 
@@ -2760,7 +2760,7 @@ async def main():
     else:
         print("Could not determine public IP address.")
 
-    bot = telegram.Bot(token=keys.telegram_bot_token)
+    bot = telegram.Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
     trade_manager = TradeManager()
 
     # Load configuration
@@ -2828,7 +2828,7 @@ async def main():
         return
 
     # Set up the Telegram bot
-    application = ApplicationBuilder().token(keys.telegram_bot_token).build()
+    application = ApplicationBuilder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
     application.add_handler(CommandHandler('start', start_command))
     application.add_handler(CommandHandler('stop', stop_command))
     application.add_handler(CommandHandler('pluse', pluse_command))
@@ -2854,7 +2854,7 @@ async def main():
         live_mode = mode == '1'
         print(f"Running in {'Live' if live_mode else 'Signal'} mode.")
         try:
-            client = Client(keys.api_mainnet, keys.secret_mainnet)
+            client = Client(os.environ.get("BINANCE_API_KEY"), os.environ.get("BINANCE_API_SECRET"))
             print("Binance client initialized.")
 
             server_time = get_binance_server_time(client)
